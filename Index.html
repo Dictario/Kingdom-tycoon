@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>3D Kingdom Tycoon</title>
+  <link rel="stylesheet" href="css/style.css">
+  <!-- Import Three.js & OrbitControls via CDN -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="ui-overlay">
+    <div id="hud">
+      <div>Gold: $<span id="gold-count">100</span></div>
+      <div>Tax: +$<span id="tax-rate">0</span>/s</div>
+    </div>
+    <div id="toolbar">
+      <button class="tool-btn active" data-type="select">Inspect</button>
+      <button class="tool-btn" data-type="road">Road ($5)</button>
+      <button class="tool-btn" data-type="house">House ($20)</button>
+      <button class="tool-btn sell" data-type="sell">Sell</button>
+    </div>
+  </div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
