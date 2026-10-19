@@ -1,0 +1,71 @@
+* {
+  box-sizing: border-box;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+body, html {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: sans-serif;
+  background: #000;
+}
+
+#ui-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 12px;
+}
+
+#hud {
+  pointer-events: auto;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  padding: 10px 16px;
+  border-radius: 20px;
+  display: flex;
+  gap: 20px;
+  font-weight: bold;
+  font-size: 14px;
+  width: fit-content;
+  backdrop-filter: blur(4px);
+}
+
+#toolbar {
+  pointer-events: auto;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.tool-btn {
+  background: #2a2a2a;
+  color: #fff;
+  border: 1px solid #555;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.tool-btn.active {
+  background: #4caf50;
+  border-color: #81c784;
+}
+
+.tool-btn.sell.active {
+  background: #f44336;
+  border-color: #ef5350;
+}
