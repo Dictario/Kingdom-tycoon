@@ -3,9 +3,9 @@ let gold = 150;
 let taxRate = 0;
 let currentTool = 'inspect';
 const gridOccupancy = {}; 
-const animatedObjects = []; // Stores objects like windmill sails
-const smokeParticles = [];  // Stores chimney smoke elements
-const citizens = [];        // Stores wandering citizen entities
+const animatedObjects = []; 
+const smokeParticles = [];  
+const citizens = [];        
 
 const COSTS = { road: 5, house: 20, farm: 35, windmill: 50, castle: 100 };
 const REFUNDS = { road: 3, house: 12, farm: 20, windmill: 30, castle: 60 };
@@ -15,18 +15,19 @@ let scene, camera, renderer, controls;
 let raycaster, mouse;
 let terrainPlane, placementCursor;
 let sunLight, ambientLight;
-let gameTime = 0; // Tracks day/night cycle
+let gameTime = 0;
+let pendingGridPos = null; // Stores target position for explicit confirmation
 
 function init() {
-  // 1. Scene & Atmospheric Sky Fog Setup
+  // 1. Scene & Sky Setup
   scene = new THREE.Scene();
   const skyColor = new THREE.Color(0xaaccff);
   scene.background = skyColor;
   scene.fog = new THREE.FogExp2(0xaaccff, 0.01);
 
   // 2. Camera & Renderer
-  camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 500);
-  camera.position.set(15, 12, 18);
+  camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 500);
+  camera.position.set(15, 14, 18);
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -35,15 +36,15 @@ function init() {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   document.body.appendChild(renderer.domElement);
 
-  // 3. Touch OrbitControls
+  // 3. Controlled Touch OrbitControls (Smooth Zoom/Pan)
   controls = new THREE.OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
-  controls.dampingFactor = 0.05;
-  controls.maxPolarAngle = Math.PI / 2.25;
-  controls.minDistance = 5;
-  controls.maxDistance = 60;
+  controls.dampingFactor = 0.04;
+  controls.maxPolarAngle = Math.PI / 2.3; // Prevent looking under the floor
+  controls.minDistance = 6;  // Controlled zoom in limit
+  controls.maxDistance = 45; // Controlled zoom out limit
 
-  // 4. Dynamic Lighting (Day/Night capable)
+  // 4. Lighting
   ambientLight = new THREE.AmbientLight(0xfff5ea, 0.7);
   scene.add(ambientLight);
 
@@ -54,7 +55,7 @@ function init() {
   sunLight.shadow.mapSize.height = 1024;
   scene.add(sunLight);
 
-  // 5. Grassland Ground Plane & River
+  // 5. Grassland Ground & River
   const terrainGeo = new THREE.PlaneGeometry(150, 150);
   const terrainMat = new THREE.MeshStandardMaterial({ color: 0x5dae49, roughness: 0.8 });
   terrainPlane = new THREE.Mesh(terrainGeo, terrainMat);
@@ -62,7 +63,6 @@ function init() {
   terrainPlane.receiveShadow = true;
   scene.add(terrainPlane);
 
-  // Add a procedural River strip across the land
   const riverGeo = new THREE.PlaneGeometry(6, 150);
   const riverMat = new THREE.MeshStandardMaterial({ color: 0x3388cc, roughness: 0.2, metalness: 0.1 });
   const river = new THREE.Mesh(riverGeo, riverMat);
@@ -92,14 +92,12 @@ function init() {
   spawnCitizens();
   loadKingdomState();
 
-  // Timers
   setInterval(economyTick, 1000);
-  setInterval(saveKingdomState, 5000); // Auto-save every 5 seconds
+  setInterval(saveKingdomState, 5000);
 
   animate();
 }
 
-// Environment Trees & Rocks
 function spawnEnvironmentProps() {
   const treeTrunkGeo = new THREE.CylinderGeometry(0.1, 0.15, 0.8, 5);
   const treeTrunkMat = new THREE.MeshStandardMaterial({ color: 0x5c4033 });
@@ -109,7 +107,6 @@ function spawnEnvironmentProps() {
   for (let i = 0; i < 35; i++) {
     const rx = Math.floor(Math.random() * 40 - 20) + 0.5;
     const rz = Math.floor(Math.random() * 40 - 20) + 0.5;
-    // Avoid river path
     if (rx > 6 && rx < 14) continue;
     const key = `${rx},${rz}`;
 
@@ -132,38 +129,26 @@ function spawnEnvironmentProps() {
   }
 }
 
-// Spawn Wandering Villagers (Citizens)
 function spawnCitizens() {
   const citizenMat = new THREE.MeshStandardMaterial({ color: 0xcc3333 });
   const headMat = new THREE.MeshStandardMaterial({ color: 0xffdbac });
 
   for (let i = 0; i < 5; i++) {
     const citizenGroup = new THREE.Group();
-    
-    // Body
     const body = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.3, 0.1), citizenMat);
     body.position.y = 0.2;
     citizenGroup.add(body);
 
-    // Head
     const head = new THREE.Mesh(new THREE.SphereGeometry(0.1, 6, 6), headMat);
     head.position.y = 0.4;
     citizenGroup.add(head);
 
-    const startX = (Math.random() * 10) - 5;
-    const startZ = (Math.random() * 10) - 5;
-    citizenGroup.position.set(startX, 0, startZ);
-
+    citizenGroup.position.set((Math.random() * 10) - 5, 0, (Math.random() * 10) - 5);
     scene.add(citizenGroup);
-    citizens.push({
-      mesh: citizenGroup,
-      angle: Math.random() * Math.PI * 2,
-      speed: 0.02 + Math.random() * 0.01
-    });
+    citizens.push({ mesh: citizenGroup, angle: Math.random() * Math.PI * 2, speed: 0.02 });
   }
 }
 
-// Built-in Audio Feedback Generator
 function playSound(type) {
   try {
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -171,25 +156,13 @@ function playSound(type) {
     const gain = audioCtx.createGain();
     osc.connect(gain);
     gain.connect(audioCtx.destination);
-
-    if (type === 'build') {
-      osc.frequency.setValueAtTime(440, audioCtx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.1);
-      gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
-      osc.start();
-      osc.stop(audioCtx.currentTime + 0.1);
-    } else if (type === 'sell') {
-      osc.frequency.setValueAtTime(300, audioCtx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(150, audioCtx.currentTime + 0.15);
-      gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
-      osc.start();
-      osc.stop(audioCtx.currentTime + 0.15);
-    }
-  } catch (e) {
-    // Audio context restricted until user interacts
-  }
+    osc.frequency.setValueAtTime(type === 'build' ? 440 : 300, audioCtx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(type === 'build' ? 880 : 150, audioCtx.currentTime + 0.1);
+    gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.1);
+  } catch (e) {}
 }
 
 function setupUI() {
@@ -198,9 +171,25 @@ function setupUI() {
       document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
       e.target.classList.add('active');
       currentTool = e.target.dataset.tool;
+      
+      const confirmBtn = document.getElementById('confirm-action-btn');
+      if (confirmBtn) {
+        confirmBtn.style.display = (currentTool === 'inspect') ? 'none' : 'block';
+      }
       placementCursor.visible = (currentTool !== 'inspect');
     });
   });
+
+  // Create an explicit Confirmation Action Button dynamically in UI overlay
+  const overlay = document.getElementById('ui-overlay');
+  if (!document.getElementById('confirm-action-btn')) {
+    const confirmBtn = document.createElement('button');
+    confirmBtn.id = 'confirm-action-btn';
+    confirmBtn.innerText = '✔ Tap Here to Confirm Action';
+    confirmBtn.style.cssText = 'display:none; position:absolute; bottom:80px; left:50%; transform:translateX(-50%); background:#4caf50; color:white; border:none; padding:12px 24px; border-radius:24px; font-weight:bold; font-size:16px; z-index:100; box-shadow: 0 4px 10px rgba(0,0,0,0.3);';
+    confirmBtn.addEventListener('click', executeConfirmedAction);
+    overlay.appendChild(confirmBtn);
+  }
 }
 
 function updateHUD() {
@@ -209,8 +198,12 @@ function updateHUD() {
 }
 
 function getGridPosition(e) {
-  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  const clientX = e.clientX || (e.touches && e.touches[0].clientX);
+  const clientY = e.clientY || (e.touches && e.touches[0].clientY);
+  if (clientX === undefined || clientY === undefined) return null;
+
+  mouse.x = (clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(clientY / window.innerHeight) * 2 + 1;
 
   raycaster.setFromCamera(mouse, camera);
   const intersects = raycaster.intersectObject(terrainPlane);
@@ -231,6 +224,7 @@ function onPointerMove(e) {
   }
   const pos = getGridPosition(e);
   if (pos) {
+    pendingGridPos = pos;
     placementCursor.position.set(pos.x, 0.03, pos.z);
     placementCursor.visible = true;
   }
@@ -238,13 +232,25 @@ function onPointerMove(e) {
 
 function onPointerDown(e) {
   if (e.target.tagName === 'BUTTON') return;
+  // In inspect mode, let OrbitControls handle camera panning/zooming cleanly without interference
+  if (currentTool === 'inspect') return;
+
   const pos = getGridPosition(e);
-  if (!pos) return;
+  if (pos) {
+    pendingGridPos = pos;
+    placementCursor.position.set(pos.x, 0.03, pos.z);
+    placementCursor.visible = true;
+  }
+}
+
+// Action only happens when user explicitly taps the green confirm button
+function executeConfirmedAction() {
+  if (!pendingGridPos) return;
 
   if (COSTS[currentTool]) {
-    placeBuilding(pos, currentTool);
+    placeBuilding(pendingGridPos, currentTool);
   } else if (currentTool === 'sell') {
-    sellBuilding(pos);
+    sellBuilding(pendingGridPos);
   }
 }
 
@@ -275,7 +281,6 @@ function placeBuilding(pos, type, freeBuild = false) {
     roof.castShadow = true;
     group.add(roof);
 
-    // Chimney & Smoke
     const chimney = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.3, 0.15), new THREE.MeshStandardMaterial({ color: 0x555555 }));
     chimney.position.set(0.2, 0.75, 0.2);
     group.add(chimney);
@@ -328,7 +333,6 @@ function placeBuilding(pos, type, freeBuild = false) {
     keep.castShadow = true;
     group.add(keep);
 
-    // Towers on corners
     [-0.3, 0.3].forEach(ox => {
       [-0.3, 0.3].forEach(oz => {
         const twr = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 1.5, 6), new THREE.MeshStandardMaterial({ color: 0x777788 }));
@@ -384,27 +388,20 @@ function economyTick() {
   }
 }
 
-// LocalStorage Save System
 function saveKingdomState() {
-  const saveData = {
-    gold: gold,
-    buildings: []
-  };
-
+  const saveData = { gold: gold, buildings: [] };
   Object.entries(gridOccupancy).forEach(([key, mesh]) => {
     if (mesh.userData && mesh.userData.type) {
       const [x, z] = key.split(',').map(Number);
       saveData.buildings.push({ x, z, type: mesh.userData.type });
     }
   });
-
   localStorage.setItem('kingdom_save_data', JSON.stringify(saveData));
 }
 
 function loadKingdomState() {
   const saved = localStorage.getItem('kingdom_save_data');
   if (!saved) return;
-
   try {
     const data = JSON.parse(saved);
     gold = data.gold || 150;
@@ -413,9 +410,7 @@ function loadKingdomState() {
         placeBuilding({ x: b.x, z: b.z, key: `${b.x},${b.z}` }, b.type, true);
       });
     }
-  } catch (err) {
-    console.error("Could not load save data:", err);
-  }
+  } catch (err) {}
 }
 
 function onWindowResize() {
@@ -427,7 +422,6 @@ function onWindowResize() {
 function animate() {
   requestAnimationFrame(animate);
 
-  // 1. Day / Night Cycle Progression
   gameTime += 0.001;
   const cycle = Math.sin(gameTime);
   if (sunLight && ambientLight) {
@@ -441,32 +435,21 @@ function animate() {
     }
   }
 
-  // 2. Animate Windmills
   animatedObjects.forEach(item => {
-    if (item.type === 'spin') {
-      item.obj.rotation.z += 0.03;
-    }
+    if (item.type === 'spin') item.obj.rotation.z += 0.03;
   });
 
-  // 3. Animate Chimney Smoke
   smokeParticles.forEach(p => {
     p.mesh.position.y += 0.004;
     p.mesh.scale.addScalar(0.001);
-    if (p.mesh.position.y > 2.0) {
-      p.mesh.position.y = p.baseY;
-      p.mesh.scale.set(1, 1, 1);
-    }
+    if (p.mesh.position.y > 2.0) p.mesh.position.y = p.baseY;
   });
 
-  // 4. Animate Citizens Wandering
   citizens.forEach(c => {
     c.mesh.position.x += Math.cos(c.angle) * c.speed;
     c.mesh.position.z += Math.sin(c.angle) * c.speed;
     if (Math.random() < 0.02) c.angle += (Math.random() - 0.5) * 2;
-    // Boundary check
-    if (Math.abs(c.mesh.position.x) > 20 || Math.abs(c.mesh.position.z) > 20) {
-      c.angle += Math.PI;
-    }
+    if (Math.abs(c.mesh.position.x) > 20 || Math.abs(c.mesh.position.z) > 20) c.angle += Math.PI;
   });
 
   controls.update();
@@ -474,4 +457,3 @@ function animate() {
 }
 
 window.onload = init;
-  
