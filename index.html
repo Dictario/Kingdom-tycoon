@@ -3,31 +3,29 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>3D Kingdom Tycoon</title>
+  <title>Kingdom Builder 3D</title>
   <link rel="stylesheet" href="css/style.css">
-  <!-- Import Three.js & OrbitControls via CDN -->
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
-      }
-    }
-  </script>
 </head>
 <body>
+
+  <!-- UI Overlay -->
   <div id="ui-overlay">
     <div id="hud">
-      <div>Gold: $<span id="gold-count">100</span></div>
-      <div>Tax: +$<span id="tax-rate">0</span>/s</div>
+      <div>Gold: $<span id="gold-val">100</span></div>
+      <div>Tax: +$<span id="tax-val">0</span>/s</div>
     </div>
+
     <div id="toolbar">
-      <button class="tool-btn active" data-type="select">Inspect</button>
-      <button class="tool-btn" data-type="road">Road ($5)</button>
-      <button class="tool-btn" data-type="house">House ($20)</button>
-      <button class="tool-btn sell" data-type="sell">Sell</button>
+      <button class="tool-btn active" data-tool="inspect">Inspect</button>
+      <button class="tool-btn" data-tool="road">Road ($5)</button>
+      <button class="tool-btn" data-tool="house">House ($20)</button>
+      <button class="tool-btn sell" data-tool="sell">Sell</button>
     </div>
   </div>
-  <script type="module" src="js/main.js"></script>
+
+  <!-- Three.js & OrbitControls via CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="js/main.js"></script>
 </body>
 </html>
