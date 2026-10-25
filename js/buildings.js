@@ -2,13 +2,18 @@
 // Add a building by adding one entry to TYPES; the toolbar and validation pick it up.
 const BOX = new THREE.BoxGeometry(1, 1, 1);
 const ROOF = new THREE.ConeGeometry(0.7071, 1, 4).rotateY(Math.PI / 4);   // square pyramid, 1x1 base
-const lambert = c => new THREE.MeshLambertMaterial({ color: c });
-const MAT = { road: lambert(0x5b6068), wall: lambert(0xeadfc2), roof: lambert(0xb5523b), door: lambert(0x5a3b2a) };
+// All dielectrics (plaster, tile, wood, asphalt), so metalness stays 0. There is no environment map,
+// so any metalness would only darken the albedo. Roughness gives each surface its own sun sheen.
+const standard = (c, rough) => new THREE.MeshStandardMaterial({ color: c, roughness: rough, metalness: 0 });
+const MAT = { road: standard(0x5b6068, 0.95), wall: standard(0xeadfc2, 0.9), roof: standard(0xb5523b, 0.55), door: standard(0x5a3b2a, 0.75) };
 
-function part(geo, mat, sx, sy, sz, x, y, z) {
+// Every part receives shadows; only `cast` parts throw them (flat slabs and tiny trim would just add shadow-pass cost).
+function part(geo, mat, sx, sy, sz, x, y, z, cast) {
   const m = new THREE.Mesh(geo, mat);
   m.scale.set(sx, sy, sz);
   m.position.set(x, y, z);
+  m.receiveShadow = true;
+  m.castShadow = !!cast;
   return m;
 }
 
@@ -26,8 +31,8 @@ export const TYPES = {
     name: 'House', cost: 20,
     make() {
       const g = new THREE.Group();
-      g.add(part(BOX, MAT.wall, 0.64, 0.42, 0.54, 0, 0.21, 0));
-      g.add(part(ROOF, MAT.roof, 0.8, 0.36, 0.7, 0, 0.6, 0));
+      g.add(part(BOX, MAT.wall, 0.64, 0.42, 0.54, 0, 0.21, 0, true));
+      g.add(part(ROOF, MAT.roof, 0.8, 0.36, 0.7, 0, 0.6, 0, true));
       g.add(part(BOX, MAT.door, 0.14, 0.22, 0.02, 0, 0.11, 0.27));
       return g;
     }
