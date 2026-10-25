@@ -22,18 +22,33 @@ try {
   throw err;
 }
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
-canvas.addEventListener('webglcontextrestored', () => { dirty = true; });
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.autoUpdate = false;     // the sun is static: redraw the shadow map only when buildings change
+renderer.shadowMap.needsUpdate = true;
+canvas.addEventListener('webglcontextrestored', () => { dirty = true; renderer.shadowMap.needsUpdate = true; });
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(SKY);
 scene.fog = new THREE.Fog(SKY, 70, 260);
-scene.add(new THREE.HemisphereLight(0xdff0ff, 0x4a6b36, 0.95));
-const sun = new THREE.DirectionalLight(0xfff2d6, 0.8);
-sun.position.set(30, 50, 20);
+// Soft sky/ground fill plus a warm, low sun. The sun sits to the side of the start camera so shadows fall across the view.
+scene.add(new THREE.HemisphereLight(0xbfdcff, 0x5b7a3f, 0.6));
+const sun = new THREE.DirectionalLight(0xfff1d6, 1.15);
+sun.position.set(-32, 32, 18);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);        // ~0.03 world units per texel; use 1024 on weak GPUs
+const R = SIZE * 0.7, sc = sun.shadow.camera;   // fit the shadow frustum to the whole kingdom
+sc.left = sc.bottom = -R;
+sc.right = sc.top = R;
+sc.near = 1;
+sc.far = 120;
+sc.updateProjectionMatrix();
+sun.shadow.bias = -0.0005;
+sun.shadow.normalBias = 0.03;
 scene.add(sun);
 
 const camera = new THREE.PerspectiveCamera(50, 1, 1, 600);
-camera.position.set(26, 24, 30);
+camera.position.set(18, 17, 22);
 
 /* ---------- endless grass (one small tiled texture) ---------- */
 const tile = document.createElement('canvas');
@@ -54,15 +69,21 @@ const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(1000, 1000).rotateX(-Math.PI / 2),
   new THREE.MeshLambertMaterial({ map: grass, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })
 );
+ground.receiveShadow = true;
 scene.add(ground);
 
 /* ---------- camera controls ---------- */
 const controls = new THREE.OrbitControls(camera, canvas);
 controls.enableDamping = true;
-controls.dampingFactor = 0.1;
-controls.minDistance = 6;
-controls.maxDistance = 80;
-controls.maxPolarAngle = Math.PI * 0.46;
+controls.dampingFactor = 0.2;              // higher settles faster; 0.1 coasted too long
+controls.rotateSpeed = 0.7;
+controls.zoomSpeed = 0.8;
+controls.panSpeed = 0.8;
+controls.screenSpacePanning = false;       // pan slides along the ground and never lifts the camera
+controls.minDistance = 8;
+controls.maxDistance = 50;
+controls.minPolarAngle = 0.2;              // stop just short of straight down
+controls.maxPolarAngle = 1.3;              // ~15 deg above the horizon: the camera can never reach the ground plane
 controls.addEventListener('change', () => { dirty = true; });
 
 const lim = SIZE / 2, before = new THREE.Vector3(), shift = new THREE.Vector3();
@@ -94,6 +115,7 @@ function place(cell) {
   const res = buildings.place(tool, cell.cx, cell.cz, treasury);
   if (!res.ok) { say(res.reason, true); return; }
   dirty = true;
+  renderer.shadowMap.needsUpdate = true;   // a new building changes the shadows
   updateHud();
   say('');
   showCursor(cell);                     // the cell is now occupied, so the highlight turns red
