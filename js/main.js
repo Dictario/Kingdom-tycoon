@@ -198,6 +198,10 @@ setTool(null);
   renderer.shadowMap.needsUpdate = true; // Refresh shadows dynamically as sun moves
 
   const normH = sunY / sunDistance; // Ranges from -1 (midnight) to +1 (noon)
+
+  // Torches: 0 by day, ramping to 1 across golden hour and dusk (normH 0.2 -> -0.1)
+  const night = Math.min(1, Math.max(0, (0.2 - normH) / 0.3));
+  buildings.update(night, performance.now() * 0.001, controls.target);
   const skyCol = new THREE.Color();
   const fogCol = new THREE.Color();
   const ambCol = new THREE.Color();
