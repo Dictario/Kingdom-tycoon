@@ -9,8 +9,9 @@ const SKY = 0x9fd3f5;
 const treasury = { gold: 100 };
 const $ = id => document.getElementById(id);
 let tool = null;                       // null = explore, otherwise a key of TYPES
-let dirty = true;                      // render on demand: idle frames cost almost nothing
+let dirty = true;                      // render on demand flag
 let hintTimer = 0;
+let gameTime = 0;                      // Tracks progression for day/night cycle
 
 /* ---------- renderer, scene, camera ---------- */
 const canvas = $('game');
@@ -24,15 +25,18 @@ try {
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.shadowMap.autoUpdate = false;     // the sun is static: redraw the shadow map only when buildings change
+renderer.shadowMap.autoUpdate = false;     // Manual shadow map management for performance
 renderer.shadowMap.needsUpdate = true;
 canvas.addEventListener('webglcontextrestored', () => { dirty = true; renderer.shadowMap.needsUpdate = true; });
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(SKY);
 scene.fog = new THREE.Fog(SKY, 70, 260);
-// Soft sky/ground fill plus a warm, low sun. The sun sits to the side of the start camera so shadows fall across the view.
-scene.add(new THREE.HemisphereLight(0xbfdcff, 0x5b7a3f, 0.6));
+
+// Soft sky/ground fill and dynamic sun
+const hemiLight = new THREE.HemisphereLight(0xbfdcff, 0x5b7a3f, 0.6);
+scene.add(hemiLight);
+
 const sun = new THREE.DirectionalLight(0xfff1d6, 1.15);
 sun.position.set(-32, 32, 18);
 sun.castShadow = true;
@@ -64,7 +68,7 @@ const grass = new THREE.CanvasTexture(tile);
 grass.wrapS = grass.wrapT = THREE.RepeatWrapping;
 grass.repeat.set(125, 125);
 grass.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
-// polygonOffset pushes the ground back so grid lines and slabs never z-fight on low-precision depth buffers
+
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(1000, 1000).rotateX(-Math.PI / 2),
   new THREE.MeshLambertMaterial({ map: grass, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })
@@ -75,19 +79,19 @@ scene.add(ground);
 /* ---------- camera controls ---------- */
 const controls = new THREE.OrbitControls(camera, canvas);
 controls.enableDamping = true;
-controls.dampingFactor = 0.2;              // higher settles faster; 0.1 coasted too long
+controls.dampingFactor = 0.2;              
 controls.rotateSpeed = 0.7;
 controls.zoomSpeed = 0.8;
 controls.panSpeed = 0.8;
-controls.screenSpacePanning = false;       // pan slides along the ground and never lifts the camera
+controls.screenSpacePanning = false;       
 controls.minDistance = 8;
 controls.maxDistance = 50;
-controls.minPolarAngle = 0.2;              // stop just short of straight down
-controls.maxPolarAngle = 1.3;              // ~15 deg above the horizon: the camera can never reach the ground plane
+controls.minPolarAngle = 0.2;              
+controls.maxPolarAngle = 1.3;              
 controls.addEventListener('change', () => { dirty = true; });
 
 const lim = SIZE / 2, before = new THREE.Vector3(), shift = new THREE.Vector3();
-function clampTarget() {                // keep the camera focus over the kingdom
+function clampTarget() {                
   before.copy(controls.target);
   controls.target.x = Math.max(-lim, Math.min(lim, controls.target.x));
   controls.target.z = Math.max(-lim, Math.min(lim, controls.target.z));
@@ -115,10 +119,10 @@ function place(cell) {
   const res = buildings.place(tool, cell.cx, cell.cz, treasury);
   if (!res.ok) { say(res.reason, true); return; }
   dirty = true;
-  renderer.shadowMap.needsUpdate = true;   // a new building changes the shadows
+  renderer.shadowMap.needsUpdate = true;   
   updateHud();
   say('');
-  showCursor(cell);                     // the cell is now occupied, so the highlight turns red
+  showCursor(cell);                     
 }
 
 /* ---------- HUD ---------- */
@@ -151,8 +155,7 @@ function say(msg, bad) {
 
 function setTool(id) {
   tool = id;
-  grid.setActive(tool !== null);        // grid lines + highlight exist only while a tool is armed
-  // Armed: one finger aims, two fingers drive the camera. Explore: one finger orbits.
+  grid.setActive(tool !== null);        
   controls.touches.ONE = tool ? -1 : THREE.TOUCH.ROTATE;
   buttons.forEach(b => b.el.classList.toggle('on', b.id === tool));
   input.reset();
@@ -169,7 +172,7 @@ addEventListener('keydown', e => {
 /* ---------- run ---------- */
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
-  renderer.setSize(w, h, false);        // CSS sizes the canvas
+  renderer.setSize(w, h, false);        
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   dirty = true;
@@ -181,7 +184,59 @@ setTool(null);
 
 (function frame() {
   requestAnimationFrame(frame);
-  controls.update();                    // fires 'change' (sets dirty) only when the camera moved
+
+  // --- GRADUAL 5-STAGE DAY/NIGHT CYCLE LOGIC ---
+  gameTime += 0.0003; // Controls cycle speed
+  const timeProgress = (gameTime % 1) * Math.PI * 2;
+  
+  const sunDistance = 45;
+  const sunX = Math.cos(timeProgress) * sunDistance;
+  const sunY = Math.sin(timeProgress) * sunDistance;
+  const sunZ = Math.sin(timeProgress * 0.5) * 15;
+
+  sun.position.set(sunX, Math.max(-10, sunY), sunZ);
+  renderer.shadowMap.needsUpdate = true; // Refresh shadows dynamically as sun moves
+
+  const normH = sunY / sunDistance; // Ranges from -1 (midnight) to +1 (noon)
+  const skyCol = new THREE.Color();
+  const fogCol = new THREE.Color();
+  const ambCol = new THREE.Color();
+
+  if (normH > 0.35) {
+    // Noon / Bright Day
+    skyCol.setHex(0x9fd3f5);
+    fogCol.setHex(0x9fd3f5);
+    ambCol.setHex(0xbfdcff);
+    sun.intensity = 1.15;
+  } else if (normH > 0.05 && normH <= 0.35) {
+    // Morning / Evening Golden Hour
+    skyCol.setHex(0xffaa55);
+    fogCol.setHex(0xffbb77);
+    ambCol.setHex(0xffcc88);
+    sun.intensity = 0.85;
+  } else if (normH >= -0.1 && normH <= 0.05) {
+    // Dawn / Dusk Sunset Horizon
+    skyCol.setHex(0xaa4444);
+    fogCol.setHex(0x883344);
+    ambCol.setHex(0x773344);
+    sun.intensity = 0.4;
+  } else {
+    // Night
+    skyCol.setHex(0x0b0b1a);
+    fogCol.setHex(0x0b0b1a);
+    ambCol.setHex(0x222244);
+    sun.intensity = 0.15;
+  }
+
+  scene.background.lerp(skyCol, 0.05);
+  scene.fog.color.lerp(fogCol, 0.05);
+  hemiLight.color.lerp(ambCol, 0.05);
+  // ---------------------------------------------
+
+  controls.update();                    
   clampTarget();
+  
+  // Forces continuous rendering to support smooth lighting transitions
+  dirty = true; 
   if (dirty) { dirty = false; renderer.render(scene, camera); }
 })();
