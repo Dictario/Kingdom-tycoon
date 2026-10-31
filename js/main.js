@@ -1,4 +1,4 @@
-// main.js: renderer, world, HUD, day/night cycle, and touch-enabled walk mode avatar.
+// main.js: renderer, world, HUD, day/night cycle, and split-screen walk controls.
 import { Grid } from './grid.js';
 import { Buildings, TYPES } from './buildings.js';
 import { Input } from './input.js';
@@ -12,10 +12,12 @@ let dirty = true;
 let hintTimer = 0;
 let gameTime = 0;                      
 
-// Walk mode player variables
+// Walk mode player & camera rotation variables
 let player = null;
 const playerPos = new THREE.Vector3(0, 0.2, 0);
 let playerAngle = 0;
+let cameraYaw = 0;    // Rotation offset around player when looking around
+let cameraDist = 4;   // Zoom distance in walk mode
 
 /* ---------- renderer, scene, camera ---------- */
 const canvas = $('game');
@@ -133,6 +135,14 @@ const input = new Input({
   onPlace: place
 });
 
+// Center-screen zoom handling via wheel / pinch in Walk Mode
+window.addEventListener('wheel', e => {
+  if (tool === 'walk') {
+    cameraDist = Math.max(2, Math.min(8, cameraDist + e.deltaY * 0.005));
+    dirty = true;
+  }
+}, { passive: true });
+
 function showCursor(cell) {
   dirty = true;
   if (!tool || tool === 'walk' || !cell) { grid.hide(); return; }
@@ -164,7 +174,7 @@ addButton('walk', 'Walk Mode', 'Explore');
 Object.keys(TYPES).forEach(id => addButton(id, TYPES[id].name, '$' + TYPES[id].cost));
 
 function updateHud() {
-  $('gold').textContent = '$' + Math.floor(treasury.gold).toLocaleString();
+  $('gold'].textContent = '$' + Math.floor(treasury.gold).toLocaleString();
   buttons.forEach(b => b.el.classList.toggle('poor', !!TYPES[b.id] && treasury.gold < TYPES[b.id].cost));
 }
 
@@ -172,7 +182,7 @@ function say(msg, bad) {
   const el = $('hint');
   clearTimeout(hintTimer);
   el.textContent = msg || (tool === 'walk'
-    ? 'Walk Mode: WASD on keyboard or Drag your finger on mobile screen to walk.'
+    ? 'Walk Mode: Left Joystick to move, Right screen to look around.'
     : tool
     ? 'Build a ' + TYPES[tool].name + ' for $' + TYPES[tool].cost + '.'
     : 'Pick a tool below. Drag to orbit, pinch to zoom, two fingers or right-drag to pan.');
@@ -187,6 +197,8 @@ function setTool(id) {
   grid.setActive(!isWalk && tool !== null);        
   controls.enabled = !isWalk; 
   
+  input.setControlsVisible(isWalk);
+
   controls.touches.ONE = tool ? -1 : THREE.TOUCH.ROTATE;
   buttons.forEach(b => b.el.classList.toggle('on', b.id === tool));
   input.reset();
@@ -214,7 +226,7 @@ setTool(null);
 (function frame() {
   requestAnimationFrame(frame);
 
-  // --- WALK MODE MOVEMENT (KEYBOARD + MOBILE TOUCH STEERING) ---
+  // --- WALK MODE MOVEMENT & SPLIT-SCREEN LOOK ---
   if (tool === 'walk' && player) {
     const moveSpeed = 0.08;
     const k = input.keys;
@@ -226,14 +238,19 @@ setTool(null);
     if (k.a) dx -= 1;
     if (k.d) dx += 1;
 
-    // Merge mobile touch drag vector if active
     if (tv.active) {
       dx += tv.x;
       dz += tv.y;
     }
 
+    // Update camera look rotation from right-screen drag
+    if (input.lookDelta.active) {
+      cameraYaw -= input.lookDelta.x;
+    }
+
     if (Math.abs(dx) > 0.05 || Math.abs(dz) > 0.05) {
-      const angle = Math.atan2(dx, dz);
+      // Movement direction relative to camera yaw
+      const angle = Math.atan2(dx, dz) + cameraYaw;
       const nextX = playerPos.x + Math.sin(angle) * moveSpeed;
       const nextZ = playerPos.z + Math.cos(angle) * moveSpeed;
 
@@ -258,15 +275,15 @@ setTool(null);
       player.rotation.y = playerAngle;
     }
 
-    // Third-Person Camera Follow
-    const targetCamX = playerPos.x - Math.sin(playerAngle) * 4;
-    const targetCamZ = playerPos.z - Math.cos(playerAngle) * 4;
-    camera.position.lerp(new THREE.Vector3(targetCamX, playerPos.y + 2.5, targetCamZ), 0.1);
+    // Third-Person Camera Follow with Yaw & Zoom Limits (Min: 2, Max: 8)
+    const targetCamX = playerPos.x - Math.sin(playerAngle + cameraYaw) * cameraDist;
+    const targetCamZ = playerPos.z - Math.cos(playerAngle + cameraYaw) * cameraDist;
+    camera.position.lerp(new THREE.Vector3(targetCamX, playerPos.y + cameraDist * 0.6, targetCamZ), 0.1);
     camera.lookAt(playerPos.x, playerPos.y + 0.5, playerPos.z);
     
     dirty = true;
   }
-  // -------------------------------------------------------------
+  // ---------------------------------------------
 
   // --- DAY/NIGHT CYCLE LOGIC ---
   gameTime += 0.0003; 
