@@ -65,6 +65,15 @@ const ARM_S = [[0.22, 0.34, 0.5], [0.5, 0.34, 0.22], [0.22, 0.34, 0.5], [0.5, 0.
 const TOP_S = [[0.28, 0.05, 0.5], [0.5, 0.05, 0.28], [0.28, 0.05, 0.5], [0.5, 0.05, 0.28]];
 const ARM_P = [[0, 0.17, -0.25], [0.25, 0.17, 0], [0, 0.17, 0.25], [-0.25, 0.17, 0]];
 
+// Collision boxes for Walk mode: [offsetX, offsetZ, halfX, halfZ, height] in the cell frame. Roads have none, so
+// they are walkable. Stalls and carts spin in quarter turns, so theirs are square. A wall's boxes follow its links.
+const WALL_HIT = [];
+for (let m = 0; m < 16; m++) {
+  const h = [[0, 0, 0.2, 0.2, 0.56]];
+  for (let i = 0; i < 4; i++) if (m & (1 << i)) h.push([ARM_P[i][0], ARM_P[i][2], ARM_S[i][0] / 2, ARM_S[i][2] / 2, 0.38]);
+  WALL_HIT.push(h);
+}
+
 // shape(variant) -> { matte: [parts], sheen: [parts] }. Everything fits the 1x1 cell, front faces +z.
 // cast: throws shadows (flat roads only receive). spin: quarter-turn by cell for variety.
 // link: re-shapes with neighbours. onRoad: may also sit on a road tile. glow: torch with night light.
@@ -74,14 +83,14 @@ export const TYPES = {
     shape: () => ({ matte: [B(0x5b6068, [0.98, 0.06, 0.98], [0, 0.03, 0])] })
   },
   house: {
-    name: 'House', cost: 20, cast: true,
+    name: 'House', cost: 20, cast: true, hit: [[0, 0, 0.34, 0.29, 0.78]],
     shape: () => ({
       matte: [B(0xeadfc2, [0.64, 0.42, 0.54], [0, 0.21, 0]), B(0x5a3b2a, [0.14, 0.22, 0.02], [0, 0.11, 0.27])],
       sheen: [P(0xb5523b, [0.8, 0.36, 0.7], [0, 0.6, 0])]
     })
   },
   wall: {
-    name: 'Stone Wall', cost: 2, cast: true, link: true,
+    name: 'Stone Wall', cost: 2, cast: true, link: true, hit: WALL_HIT, hitByMask: true,
     shape: mask => {
       const m = [B(0x8d8f93, [0.36, 0.5, 0.36], [0, 0.25, 0]), B(0xa7a9ad, [0.44, 0.06, 0.44], [0, 0.53, 0])];
       for (let i = 0; i < 4; i++) {
@@ -93,7 +102,7 @@ export const TYPES = {
     }
   },
   stall: {
-    name: 'Market Stall', cost: 15, cast: true, spin: true,
+    name: 'Market Stall', cost: 15, cast: true, spin: true, hit: [[0, 0, 0.45, 0.45, 0.72]],
     shape: () => {
       const wood = 0x6b4a2f, m = [];
       [-0.4, 0.4].forEach(x => {
@@ -113,7 +122,7 @@ export const TYPES = {
     }
   },
   cart: {
-    name: 'Cart', cost: 10, cast: true, spin: true, onRoad: true,
+    name: 'Cart', cost: 10, cast: true, spin: true, onRoad: true, hit: [[0, 0, 0.36, 0.36, 0.53]],
     shape: () => {
       const bed = 0x8a5a33, m = [];
       m.push(B(bed, [0.56, 0.04, 0.4], [0, 0.25, -0.05]));                     // bed and boards
@@ -135,7 +144,7 @@ export const TYPES = {
     }
   },
   torch: {
-    name: 'Torch', cost: 8, cast: true, glow: true,
+    name: 'Torch', cost: 8, cast: true, glow: true, hit: [[0, 0, 0.14, 0.14, 0.66]],
     shape: () => ({
       matte: [
         Y(0x55575c, [0.28, 0.06, 0.28], [0, 0.03, 0]),                         // foot
@@ -168,6 +177,20 @@ function make(type) {
     g.add(mesh);                                                               // children[0] is always the matte body
   });
   return g;
+}
+
+// Circle (x, z, r) against a building's collision boxes. y (optional) is the height of the body's lowest point.
+function hits(rec, wx, wz, x, z, r, y) {
+  const t = TYPES[rec.type], list = t.hit && (t.hitByMask ? t.hit[rec.mask || 0] : t.hit);
+  if (!list) return false;
+  for (let i = 0; i < list.length; i++) {
+    const b = list[i];
+    if (y !== undefined && y > b[4]) continue;
+    const nx = Math.max(wx + b[0] - b[2], Math.min(wx + b[0] + b[2], x));
+    const nz = Math.max(wz + b[1] - b[3], Math.min(wz + b[1] + b[3], z));
+    if ((x - nx) * (x - nx) + (z - nz) * (z - nz) < r * r) return true;
+  }
+  return false;
 }
 
 export class Buildings {
@@ -246,7 +269,35 @@ export class Buildings {
       const n = this.at(cx + DIRS[i][0], cz + DIRS[i][1]);
       if (n && n.type === b.type) mask |= 1 << i;
     }
+    b.mask = mask;                                                             // collision follows the shape
     b.object.children[0].geometry = model(b.type, mask).matte;
+  }
+
+  // True if a body of radius r at world (x, z) touches a solid building. Optional y = height of the body's lowest
+  // point, so a camera above a roof is not blocked by it. A cart parked on a road blocks; the bare road does not.
+  blocked(x, z, r, y) {
+    const half = this.grid.half, c0 = Math.floor(x + half), z0 = Math.floor(z + half);
+    for (let cx = c0 - 1; cx <= c0 + 1; cx++) {
+      for (let cz = z0 - 1; cz <= z0 + 1; cz++) {
+        const rec = this.at(cx, cz);
+        if (!rec) continue;
+        const wx = cx - half + 0.5, wz = cz - half + 0.5;
+        if (hits(rec, wx, wz, x, z, r, y) || (rec.prop && hits(rec.prop, wx, wz, x, z, r, y))) return true;
+      }
+    }
+    return false;
+  }
+
+  // Nearest standing spot to (x, z) that is clear of buildings and inside the kingdom.
+  freeSpot(x, z, r) {
+    const lim = this.grid.half - r;
+    for (let d = 0; d <= 5; d += 0.25) {
+      for (let a = 0; a < (d ? 16 : 1); a++) {
+        const px = x + Math.cos(a * Math.PI / 8) * d, pz = z + Math.sin(a * Math.PI / 8) * d;
+        if (Math.abs(px) <= lim && Math.abs(pz) <= lim && !this.blocked(px, pz, r)) return { x: px, z: pz };
+      }
+    }
+    return { x: x, z: z };
   }
 
   // Call once per frame. night: 0 (day) .. 1 (full dark); time in seconds; focus = { x, z } the camera looks at.
