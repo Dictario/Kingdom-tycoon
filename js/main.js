@@ -1,24 +1,20 @@
-// main.js: renderer, world, HUD, day/night cycle, and robust 360 walkthrough camera.
+// main.js: renderer, world, HUD, and the wiring between Grid, Buildings and Input.
+// Plain ES6 on purpose (no ?. or ??) so it runs on older browsers. THREE and THREE.OrbitControls are globals.
 import { Grid } from './grid.js';
 import { Buildings, TYPES } from './buildings.js';
-import { Input } from './input.js';
+import { Input, Keys, Pad } from './input.js';
+import { Player } from './player.js';
 
-const SIZE = 40;                       
+const SIZE = 40;                       // playable cells per side
 const SKY = 0x9fd3f5;
 const treasury = { gold: 100 };
 const $ = id => document.getElementById(id);
-let tool = null;                       
-let dirty = true;                      
+let tool = null;                       // null = explore, otherwise a key of TYPES
+let dirty = true;                      // render on demand flag
 let hintTimer = 0;
-let gameTime = 0;                      
-
-// Walk mode player & true 360 camera angles
-let player = null;
-const playerPos = new THREE.Vector3(0, 0.2, 0);
-let playerAngle = 0;
-let cameraYaw = 0;     // 360 horizontal rotation
-let cameraPitch = 0.3; // Vertical tilt angle
-const cameraDist = 4;  // Follow distance
+let walking = false;                   // Walk mode: orbit controls off, avatar + chase camera on
+let orbitOffset = null;                // camera offset from its target, restored when leaving Walk mode
+let gameTime = 0;                      // Tracks progression for day/night cycle
 
 /* ---------- renderer, scene, camera ---------- */
 const canvas = $('game');
@@ -32,7 +28,7 @@ try {
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.shadowMap.autoUpdate = false;     
+renderer.shadowMap.autoUpdate = false;     // Manual shadow map management for performance
 renderer.shadowMap.needsUpdate = true;
 canvas.addEventListener('webglcontextrestored', () => { dirty = true; renderer.shadowMap.needsUpdate = true; });
 
@@ -40,14 +36,15 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(SKY);
 scene.fog = new THREE.Fog(SKY, 70, 260);
 
+// Soft sky/ground fill and dynamic sun
 const hemiLight = new THREE.HemisphereLight(0xbfdcff, 0x5b7a3f, 0.6);
 scene.add(hemiLight);
 
 const sun = new THREE.DirectionalLight(0xfff1d6, 1.15);
 sun.position.set(-32, 32, 18);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);        
-const R = SIZE * 0.7, sc = sun.shadow.camera;   
+sun.shadow.mapSize.set(2048, 2048);        // ~0.03 world units per texel; use 1024 on weak GPUs
+const R = SIZE * 0.7, sc = sun.shadow.camera;   // fit the shadow frustum to the whole kingdom
 sc.left = sc.bottom = -R;
 sc.right = sc.top = R;
 sc.near = 1;
@@ -60,7 +57,7 @@ scene.add(sun);
 const camera = new THREE.PerspectiveCamera(50, 1, 1, 600);
 camera.position.set(18, 17, 22);
 
-/* ---------- endless grass ---------- */
+/* ---------- endless grass (one small tiled texture) ---------- */
 const tile = document.createElement('canvas');
 tile.width = tile.height = 128;
 const g2 = tile.getContext('2d');
@@ -81,27 +78,6 @@ const ground = new THREE.Mesh(
 );
 ground.receiveShadow = true;
 scene.add(ground);
-
-/* ---------- player avatar setup ---------- */
-const playerGroup = new THREE.Group();
-const bodyMesh = new THREE.Mesh(
-  new THREE.BoxGeometry(0.3, 0.5, 0.15), 
-  new THREE.MeshStandardMaterial({ color: 0x3366cc, roughness: 0.7 })
-);
-bodyMesh.position.y = 0.25;
-bodyMesh.castShadow = true;
-playerGroup.add(bodyMesh);
-
-const headMesh = new THREE.Mesh(
-  new THREE.SphereGeometry(0.12, 6, 6), 
-  new THREE.MeshStandardMaterial({ color: 0xffdbac })
-);
-headMesh.position.y = 0.55;
-playerGroup.add(headMesh);
-
-playerGroup.position.copy(playerPos);
-scene.add(playerGroup);
-player = playerGroup;
 
 /* ---------- camera controls ---------- */
 const controls = new THREE.OrbitControls(camera, canvas);
@@ -129,16 +105,21 @@ function clampTarget() {
 /* ---------- Phase 2 systems ---------- */
 const grid = new Grid(scene, SIZE);
 const buildings = new Buildings(scene, grid);
+const player = new Player(scene, buildings, SIZE);
+const keys = new Keys();
+const pad = new Pad($('pad'), $('knob'));
 const input = new Input({
   canvas: canvas, camera: camera, grid: grid,
-  active: () => tool !== null && tool !== 'walk',
+  active: () => tool !== null,
+  walking: () => walking,
+  onLook: (dx, dy) => player.look(dx, dy),
   onHover: showCursor,
   onPlace: place
 });
 
 function showCursor(cell) {
   dirty = true;
-  if (!tool || tool === 'walk' || !cell) { grid.hide(); return; }
+  if (!tool || !cell) { grid.hide(); return; }
   grid.show(cell.cx, cell.cz, buildings.check(tool, cell.cx, cell.cz, treasury.gold) === '');
 }
 
@@ -152,7 +133,7 @@ function place(cell) {
   showCursor(cell);                     
 }
 
-/* ---------- HUD & Toolbar ---------- */
+/* ---------- HUD ---------- */
 const buttons = [];
 function addButton(id, label, sub) {
   const el = document.createElement('button');
@@ -163,8 +144,52 @@ function addButton(id, label, sub) {
   buttons.push({ id: id, el: el });
 }
 addButton(null, 'Explore', 'Camera');
-addButton('walk', 'Walk Mode', 'Explore');
 Object.keys(TYPES).forEach(id => addButton(id, TYPES[id].name, '$' + TYPES[id].cost));
+
+/* ---------- Walk / Inspect mode ---------- */
+const walkBtn = document.createElement('button');
+walkBtn.type = 'button';
+walkBtn.onclick = () => setWalk(!walking);
+$('toolbar').insertBefore(walkBtn, $('toolbar').firstChild);   // first in the strip; not in `buttons`, so hotkeys 1-7 stay put
+
+function paintWalkBtn() {
+  walkBtn.innerHTML = '<span class="n">' + (walking ? 'Inspect' : 'Walk') + '</span><span class="p">' + (walking ? 'Orbit view' : 'Stroll') + '</span>';
+  walkBtn.classList.toggle('on', walking);
+  buttons.forEach(b => { if (b.id === null) b.el.classList.toggle('on', !walking); });   // Explore is not "on" while walking
+}
+paintWalkBtn();
+
+const touchy = () => (window.matchMedia && matchMedia('(pointer: coarse)').matches) || navigator.maxTouchPoints > 0;
+function placePad() {                  // sit the joystick just above the footer, whatever height the footer has
+  const top = document.querySelector('footer').getBoundingClientRect().top;
+  $('pad').style.bottom = Math.max(0, window.innerHeight - top + 14) + 'px';
+}
+
+function setWalk(on) {
+  if (on === walking) return;
+  if (on) {
+    setTool(null);                     // closes the grid and any armed tool
+    orbitOffset = camera.position.clone().sub(controls.target);
+    walking = true;
+    controls.enabled = false;          // OrbitControls off: Walk mode drives the camera
+    player.spawn(controls.target.x, controls.target.z, Math.atan2(orbitOffset.x, orbitOffset.z));
+    player.show(camera);
+    $('pad').hidden = !touchy();       // the joystick only appears on touch devices
+    if (!$('pad').hidden) placePad();
+  } else {
+    walking = false;
+    player.hide(camera);
+    controls.enabled = true;
+    controls.target.set(player.x, 0, player.z);                // Inspect resumes from where you stood
+    camera.position.copy(controls.target).add(orbitOffset);
+    pad.release();
+    $('pad').hidden = true;
+  }
+  paintWalkBtn();
+  input.reset();
+  say('');
+  dirty = true;
+}
 
 function updateHud() {
   $('gold').textContent = '$' + Math.floor(treasury.gold).toLocaleString();
@@ -174,22 +199,20 @@ function updateHud() {
 function say(msg, bad) {
   const el = $('hint');
   clearTimeout(hintTimer);
-  el.textContent = msg || (tool === 'walk'
-    ? 'Walk Mode: Use W,A,S,D or drag anywhere to look 360° around.'
+  el.textContent = msg || (walking
+    ? 'Walk: W A S D or the joystick to move, drag to look, Shift to run. Tab or Inspect to go back.'
     : tool
-    ? 'Build a ' + TYPES[tool].name + ' for $' + TYPES[tool].cost + '.'
+    ? 'Build a ' + TYPES[tool].name + ' for $' + TYPES[tool].cost + '. Touch: drag to aim, release to place. Mouse: click. Two fingers move the camera.'
     : 'Pick a tool below. Drag to orbit, pinch to zoom, two fingers or right-drag to pan.');
   el.className = 'card' + (bad ? ' bad' : '');
-  if (msg) hintTimer = setTimeout(() => say(''), 2200);
+  if (walking && !$('pad').hidden) placePad();
+  if (msg) hintTimer = setTimeout(() => say(''), 1800);
 }
 
 function setTool(id) {
+  if (walking) setWalk(false);         // picking any tool leaves Walk mode
   tool = id;
-  const isWalk = (tool === 'walk');
-  
-  grid.setActive(!isWalk && tool !== null);        
-  controls.enabled = !isWalk; 
-  
+  grid.setActive(tool !== null);        
   controls.touches.ONE = tool ? -1 : THREE.TOUCH.ROTATE;
   buttons.forEach(b => b.el.classList.toggle('on', b.id === tool));
   input.reset();
@@ -198,7 +221,10 @@ function setTool(id) {
 }
 
 addEventListener('keydown', e => {
+  const n = +e.key;
   if (e.key === 'Escape') setTool(null);
+  else if (e.key === 'Tab') { e.preventDefault(); setWalk(!walking); }
+  else if (n >= 1 && n <= buttons.length) buttons[n - 1].el.click();
 });
 
 /* ---------- run ---------- */
@@ -208,73 +234,21 @@ function resize() {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   dirty = true;
+  if (walking && !$('pad').hidden) placePad();
 }
 addEventListener('resize', resize);
 resize();
 updateHud();
 setTool(null);
 
+let lastT = performance.now();
 (function frame() {
   requestAnimationFrame(frame);
+  const now = performance.now(), dt = Math.min(0.05, (now - lastT) / 1000);
+  lastT = now;
 
-  // --- STABLE 360° WALK MODE & CAMERA LOOK ---
-  if (tool === 'walk' && player) {
-    const moveSpeed = 0.08;
-    const k = input.keys;
-    let moveX = 0, moveZ = 0;
-
-    if (k.w || k.arrowup) moveZ -= 1;
-    if (k.s || k.arrowdown) moveZ += 1;
-    if (k.a || k.arrowleft) moveX -= 1;
-    if (k.d || k.arrowright) moveX += 1;
-
-    // Apply look delta inputs from mouse or touch dragging
-    if (input.lookDelta.active) {
-      cameraYaw -= input.lookDelta.x;
-      cameraPitch = Math.max(-0.2, Math.min(1.2, cameraPitch + input.lookDelta.y)); // Clamp vertical tilt
-    }
-
-    if (moveX !== 0 || moveZ !== 0) {
-      // Move relative to the camera's current horizontal yaw orientation
-      const angle = Math.atan2(moveX, moveZ) + cameraYaw;
-      const nextX = playerPos.x + Math.sin(angle) * moveSpeed;
-      const nextZ = playerPos.z + Math.cos(angle) * moveSpeed;
-
-      const cellCoords = grid.snap(nextX, nextZ);
-      let canMove = true;
-      if (cellCoords) {
-        const building = buildings.at(cellCoords.cx, cellCoords.cz);
-        if (building && building.type !== 'road') {
-          canMove = false;
-        }
-      } else {
-        canMove = false;
-      }
-
-      if (canMove) {
-        playerPos.x = nextX;
-        playerPos.z = nextZ;
-        playerAngle = angle;
-      }
-
-      player.position.copy(playerPos);
-      player.rotation.y = playerAngle;
-    }
-
-    // Smooth 360 spherical positioning for camera relative to player position
-    const camX = playerPos.x - Math.sin(cameraYaw) * cameraDist * Math.cos(cameraPitch);
-    const camY = playerPos.y + 0.5 + Math.sin(cameraPitch) * cameraDist;
-    const camZ = playerPos.z - Math.cos(cameraYaw) * cameraDist * Math.cos(cameraPitch);
-
-    camera.position.lerp(new THREE.Vector3(camX, camY, camZ), 0.15);
-    camera.lookAt(playerPos.x, playerPos.y + 0.4, playerPos.z);
-    
-    dirty = true;
-  }
-  // ---------------------------------------------
-
-  // --- DAY/NIGHT CYCLE LOGIC ---
-  gameTime += 0.0003; 
+  // --- GRADUAL 5-STAGE DAY/NIGHT CYCLE LOGIC ---
+  gameTime += 0.0003; // Controls cycle speed
   const timeProgress = (gameTime % 1) * Math.PI * 2;
   
   const sunDistance = 45;
@@ -283,32 +257,37 @@ setTool(null);
   const sunZ = Math.sin(timeProgress * 0.5) * 15;
 
   sun.position.set(sunX, Math.max(-10, sunY), sunZ);
-  renderer.shadowMap.needsUpdate = true; 
+  renderer.shadowMap.needsUpdate = true; // Refresh shadows dynamically as sun moves
 
-  const normH = sunY / sunDistance; 
+  const normH = sunY / sunDistance; // Ranges from -1 (midnight) to +1 (noon)
+
+  // Torches: 0 by day, ramping to 1 across golden hour and dusk (normH 0.2 -> -0.1)
   const night = Math.min(1, Math.max(0, (0.2 - normH) / 0.3));
-  buildings.update(night, performance.now() * 0.001, controls.target);
-
+  buildings.update(night, now * 0.001, walking ? player : controls.target);   // torch lights follow whoever is moving
   const skyCol = new THREE.Color();
   const fogCol = new THREE.Color();
   const ambCol = new THREE.Color();
 
   if (normH > 0.35) {
+    // Noon / Bright Day
     skyCol.setHex(0x9fd3f5);
     fogCol.setHex(0x9fd3f5);
     ambCol.setHex(0xbfdcff);
     sun.intensity = 1.15;
   } else if (normH > 0.05 && normH <= 0.35) {
+    // Morning / Evening Golden Hour
     skyCol.setHex(0xffaa55);
     fogCol.setHex(0xffbb77);
     ambCol.setHex(0xffcc88);
     sun.intensity = 0.85;
   } else if (normH >= -0.1 && normH <= 0.05) {
+    // Dawn / Dusk Sunset Horizon
     skyCol.setHex(0xaa4444);
     fogCol.setHex(0x883344);
     ambCol.setHex(0x773344);
     sun.intensity = 0.4;
   } else {
+    // Night
     skyCol.setHex(0x0b0b1a);
     fogCol.setHex(0x0b0b1a);
     ambCol.setHex(0x222244);
@@ -318,12 +297,17 @@ setTool(null);
   scene.background.lerp(skyCol, 0.05);
   scene.fog.color.lerp(fogCol, 0.05);
   hemiLight.color.lerp(ambCol, 0.05);
-  // -----------------------------
+  // ---------------------------------------------
 
-  if (tool !== 'walk') {
-    controls.update();                    
-    clampTarget();
-  }
+  if (walking) {
+    const k = keys.axis();
+    player.turn(keys.turn() * 2 * dt);
+    player.update(dt, Math.max(-1, Math.min(1, k.x + pad.x)), Math.max(-1, Math.min(1, k.y + pad.y)), keys.run);
+    player.follow(camera, dt);
+  } else controls.update();                    
+  if (!walking) clampTarget();
   
+  // Forces continuous rendering to support smooth lighting transitions
+  dirty = true; 
   if (dirty) { dirty = false; renderer.render(scene, camera); }
 })();
