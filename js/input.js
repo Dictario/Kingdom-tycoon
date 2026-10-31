@@ -1,7 +1,4 @@
-// input.js: one pointer pipeline for mouse, touch and pen. Listens on the canvas only, so HUD touches never reach it.
-//   Mouse: hover shows the cell, a click (no drag) places.
-//   Touch: finger-down shows the cell, dragging re-aims it, lifting places. Drag off the map to cancel.
-//   A second finger cancels the gesture (pinch / two-finger pan belongs to the camera).
+// input.js: one pointer pipeline for mouse, touch, pen, and keyboard movement.
 export class Input {
   constructor(o) {
     this.canvas = o.canvas;
@@ -12,12 +9,17 @@ export class Input {
     this.onPlace = o.onPlace;     // (cell) => void
 
     this.ray = new THREE.Raycaster();
-    this.ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);   // y = 0, no mesh needed
+    this.ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);   
     this.ndc = new THREE.Vector2();
     this.pt = new THREE.Vector3();
-    this.ids = new Set();         // pointers currently down on the canvas
-    this.press = null;            // the single-pointer gesture in progress
-    this.cell = null;             // last cell reported to onHover
+    this.ids = new Set();         
+    this.press = null;            
+    this.cell = null;             
+
+    // --- Keyboard movement tracking for Walk Mode ---
+    this.keys = { w: false, a: false, s: false, d: false };
+    window.addEventListener('keydown', e => this.onKey(e, true));
+    window.addEventListener('keyup', e => this.onKey(e, false));
 
     const c = this.canvas;
     c.addEventListener('pointerdown', e => this.down(e));
@@ -27,12 +29,19 @@ export class Input {
     c.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') this.setCell(null); });
   }
 
-  // Screen point -> grid cell via a ray/plane intersection.
+  onKey(e, isDown) {
+    const k = e.key.toLowerCase();
+    if (k === 'w' || k === 'arrowup') this.keys.w = isDown;
+    if (k === 'a' || k === 'arrowleft') this.keys.a = isDown;
+    if (k === 's' || k === 'arrowdown') this.keys.s = isDown;
+    if (k === 'd' || k === 'arrowright') this.keys.d = isDown;
+  }
+
   cellAt(e) {
     const r = this.canvas.getBoundingClientRect();
     this.ndc.set((e.clientX - r.left) / r.width * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     this.ray.setFromCamera(this.ndc, this.camera);
-    if (!this.ray.ray.intersectPlane(this.ground, this.pt)) return null;   // pointing at the sky
+    if (!this.ray.ray.intersectPlane(this.ground, this.pt)) return null;   
     return this.grid.snap(this.pt.x, this.pt.z);
   }
 
@@ -47,7 +56,7 @@ export class Input {
 
   down(e) {
     if (e.target !== this.canvas) return;
-    if (e.isPrimary) this.ids.clear();   // a primary pointer starts a fresh gesture, so a lost pointerup can't wedge input
+    if (e.isPrimary) this.ids.clear();   
     this.ids.add(e.pointerId);
     if (this.ids.size > 1) { this.press = null; this.setCell(null); return; }
     this.press = { x: e.clientX, y: e.clientY, button: e.button, moved: false };
