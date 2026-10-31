@@ -1,10 +1,10 @@
-// input.js: pointer pipeline for mouse, touch, pen, keyboard, and virtual mobile joystick.
+// input.js: pointer pipeline with split-screen mobile controls (Left: Move, Right: Look, Center: Zoom).
 export class Input {
   constructor(o) {
     this.canvas = o.canvas;
     this.camera = o.camera;
     this.grid = o.grid;
-    this.active = o.active;       // () => is a placement tool armed?
+    this.active = o.active;       
     this.onHover = o.onHover;     
     this.onPlace = o.onPlace;     
 
@@ -16,15 +16,15 @@ export class Input {
     this.press = null;            
     this.cell = null;             
 
-    // Movement Vectors for Walk Mode
+    // Walk Mode Movement & Look Vectors
     this.keys = { w: false, a: false, s: false, d: false };
     this.touchVector = { x: 0, y: 0, active: false };
+    this.lookDelta = { x: 0, active: false };
+    this.zoomDelta = 0;
 
-    // Keyboard Listeners
     window.addEventListener('keydown', e => this.onKey(e, true));
     window.addEventListener('keyup', e => this.onKey(e, false));
 
-    // Pointer Listeners on Canvas
     const c = this.canvas;
     c.addEventListener('pointerdown', e => this.down(e));
     c.addEventListener('pointermove', e => this.move(e));
@@ -32,90 +32,102 @@ export class Input {
     c.addEventListener('pointercancel', e => this.cancel(e));
     c.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') this.setCell(null); });
 
-    // Build Virtual Touch Joystick UI for Mobile
-    this.createMobileJoystick();
+    this.setupSplitScreenUI();
   }
 
-  // --- Virtual Joystick for Mobile Walk Mode ---
-  createMobileJoystick() {
-    if (document.getElementById('virtual-joystick')) return;
+  setupSplitScreenUI() {
+    if (document.getElementById('mobile-controls-overlay')) return;
 
-    const base = document.createElement('div');
-    base.id = 'virtual-joystick';
-    base.style.cssText = `
-      position: fixed; bottom: 90px; left: 24px; width: 110px; height: 110px;
-      background: rgba(0, 0, 0, 0.35); border: 2px solid rgba(255, 255, 255, 0.3);
-      border-radius: 50%; display: none; touch-action: none; z-index: 1000;
-      pointer-events: auto; backdrop-filter: blur(4px);
+    const overlay = document.createElement('div');
+    overlay.id = 'mobile-controls-overlay';
+    overlay.style.cssText = `
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none; display: none; z-index: 1000;
     `;
 
+    // Left joystick visual guide
+    const leftZone = document.createElement('div');
+    leftZone.id = 'joystick-base';
+    leftZone.style.cssText = `
+      position: absolute; bottom: 40px; left: 40px; width: 120px; height: 120px;
+      background: rgba(0, 0, 0, 0.25); border: 2px solid rgba(255, 255, 255, 0.2);
+      border-radius: 50%; pointer-events: auto; backdrop-filter: blur(4px);
+    `;
     const knob = document.createElement('div');
     knob.id = 'joystick-knob';
     knob.style.cssText = `
-      position: absolute; top: 30px; left: 30px; width: 46px; height: 46px;
+      position: absolute; top: 35px; left: 35px; width: 50px; height: 50px;
       background: rgba(244, 201, 93, 0.85); border-radius: 50%;
       box-shadow: 0 2px 8px rgba(0,0,0,0.4); pointer-events: none;
       transition: transform 0.05s ease-out;
     `;
-    base.appendChild(knob);
-    document.body.appendChild(base);
+    leftZone.appendChild(knob);
+    overlay.appendChild(leftZone);
 
-    let activeTouchId = null;
-    const center = { x: 55, y: 55 };
+    // Right screen look indicator hint
+    const rightHint = document.createElement('div');
+    rightHint.id = 'right-look-hint';
+    rightHint.style.cssText = `
+      position: absolute; bottom: 40px; right: 40px; padding: 8px 14px;
+      background: rgba(0,0,0,0.3); border-radius: 8px; font-size: 11px;
+      color: rgba(255,255,255,0.7); pointer-events: none;
+    `;
+    rightHint.textContent = 'Drag here to look around';
+    overlay.appendChild(rightHint);
 
-    const handleTouch = (clientX, clientY) => {
-      const rect = base.getBoundingClientRect();
-      const touchX = clientX - rect.left - center.x;
-      const touchY = clientY - rect.top - center.y;
-      const dist = Math.hypot(touchX, touchY);
-      const maxDist = 40;
+    document.body.appendChild(overlay);
 
-      const clampDist = Math.min(dist, maxDist);
-      const angle = Math.atan2(touchY, touchX);
-
-      const knobX = Math.cos(angle) * clampDist;
-      const knobY = Math.sin(angle) * clampDist;
-
-      knob.style.transform = `translate(${knobX}px, ${knobY}px)`;
-
-      this.touchVector.x = knobX / maxDist;
-      this.touchVector.y = knobY / maxDist;
-      this.touchVector.active = true;
-    };
-
-    base.addEventListener('pointerdown', e => {
-      activeTouchId = e.pointerId;
-      base.setPointerCapture(e.pointerId);
-      handleTouch(e.clientX, e.clientY);
+    // Handle Left Joystick Touch
+    let moveTouchId = null;
+    const center = { x: 60, y: 60 };
+    leftZone.addEventListener('pointerdown', e => {
+      moveTouchId = e.pointerId;
+      leftZone.setPointerCapture(e.pointerId);
+      this.updateJoystick(e, leftZone, knob, center);
     });
-
-    base.addEventListener('pointermove', e => {
-      if (e.pointerId === activeTouchId) {
-        handleTouch(e.clientX, e.clientY);
-      }
+    leftZone.addEventListener('pointermove', e => {
+      if (e.pointerId === moveTouchId) this.updateJoystick(e, leftZone, knob, center);
     });
-
-    const stopJoystick = e => {
-      if (e.pointerId === activeTouchId) {
-        activeTouchId = null;
+    const endMove = e => {
+      if (e.pointerId === moveTouchId) {
+        moveTouchId = null;
         knob.style.transform = 'translate(0px, 0px)';
         this.touchVector.x = 0;
         this.touchVector.y = 0;
         this.touchVector.active = false;
       }
     };
-
-    base.addEventListener('pointerup', stopJoystick);
-    base.addEventListener('pointercancel', stopJoystick);
+    leftZone.addEventListener('pointerup', endMove);
+    leftZone.addEventListener('pointercancel', endMove);
   }
 
-  setJoystickVisible(visible) {
-    const joy = document.getElementById('virtual-joystick');
-    if (joy) joy.style.display = visible ? 'block' : 'none';
+  updateJoystick(e, base, knob, center) {
+    const rect = base.getBoundingClientRect();
+    const touchX = e.clientX - rect.left - center.x;
+    const touchY = e.clientY - rect.top - center.y;
+    const dist = Math.hypot(touchX, touchY);
+    const maxDist = 45;
+    const clampDist = Math.min(dist, maxDist);
+    const angle = Math.atan2(touchY, touchX);
+
+    const knobX = Math.cos(angle) * clampDist;
+    const knobY = Math.sin(angle) * clampDist;
+    knob.style.transform = `translate(${knobX}px, ${knobY}px)`;
+
+    this.touchVector.x = knobX / maxDist;
+    this.touchVector.y = knobY / maxDist;
+    this.touchVector.active = true;
+  }
+
+  setControlsVisible(visible) {
+    const overlay = document.getElementById('mobile-controls-overlay');
+    if (overlay) overlay.style.display = visible ? 'block' : 'none';
     if (!visible) {
       this.touchVector.active = false;
       this.touchVector.x = 0;
       this.touchVector.y = 0;
+      this.lookDelta.active = false;
+      this.lookDelta.x = 0;
     }
   }
 
@@ -152,6 +164,12 @@ export class Input {
     if (e.isPrimary) this.ids.clear();   
     this.ids.add(e.pointerId);
 
+    // If in Walk mode and touching the right side of the screen, enable looking around
+    if (e.pointerType === 'touch' && !this.active() && e.clientX > window.innerWidth * 0.45) {
+      this.lookDelta.active = true;
+      this.lookDelta.startX = e.clientX;
+    }
+
     if (this.ids.size > 1) { this.press = null; this.setCell(null); return; }
     this.press = { x: e.clientX, y: e.clientY, button: e.button, moved: false };
     if (this.active()) this.setCell(this.cellAt(e));
@@ -161,6 +179,15 @@ export class Input {
     const p = this.press, touch = e.pointerType !== 'mouse';
     if (p && Math.hypot(e.clientX - p.x, e.clientY - p.y) > 8) p.moved = true;
 
+    // Handle right-side screen drag for camera looking in Walk mode
+    if (this.lookDelta.active && touch) {
+      const deltaX = e.clientX - this.lookDelta.startX;
+      this.lookDelta.x = deltaX * 0.005;
+      this.lookDelta.startX = e.clientX;
+    } else {
+      this.lookDelta.x = 0;
+    }
+
     if (!this.active()) return;
     if (!touch || p) this.setCell(this.cellAt(e));
   }
@@ -169,6 +196,8 @@ export class Input {
     this.ids.delete(e.pointerId);
     const p = this.press, touch = e.pointerType !== 'mouse';
     this.press = null;
+    this.lookDelta.active = false;
+    this.lookDelta.x = 0;
 
     if (!p || !this.active()) return;
     const cell = this.cellAt(e);
@@ -179,6 +208,7 @@ export class Input {
   cancel(e) {
     this.ids.delete(e.pointerId);
     this.press = null;
+    this.lookDelta.active = false;
     this.setCell(null);
   }
 }
