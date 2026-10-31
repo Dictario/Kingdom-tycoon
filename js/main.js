@@ -1,4 +1,4 @@
-// main.js: renderer, world, HUD, day/night cycle, and walk mode avatar.
+// main.js: renderer, world, HUD, day/night cycle, and touch-enabled walk mode avatar.
 import { Grid } from './grid.js';
 import { Buildings, TYPES } from './buildings.js';
 import { Input } from './input.js';
@@ -160,7 +160,7 @@ function addButton(id, label, sub) {
   buttons.push({ id: id, el: el });
 }
 addButton(null, 'Explore', 'Camera');
-addButton('walk', 'Walk Mode', 'Explore'); // <-- Walk Mode Button
+addButton('walk', 'Walk Mode', 'Explore');
 Object.keys(TYPES).forEach(id => addButton(id, TYPES[id].name, '$' + TYPES[id].cost));
 
 function updateHud() {
@@ -172,12 +172,12 @@ function say(msg, bad) {
   const el = $('hint');
   clearTimeout(hintTimer);
   el.textContent = msg || (tool === 'walk'
-    ? 'Walk Mode: Use W, A, S, D keys to walk around your city.'
+    ? 'Walk Mode: WASD on keyboard or Drag your finger on mobile screen to walk.'
     : tool
     ? 'Build a ' + TYPES[tool].name + ' for $' + TYPES[tool].cost + '.'
     : 'Pick a tool below. Drag to orbit, pinch to zoom, two fingers or right-drag to pan.');
   el.className = 'card' + (bad ? ' bad' : '');
-  if (msg) hintTimer = setTimeout(() => say(''), 1800);
+  if (msg) hintTimer = setTimeout(() => say(''), 2200);
 }
 
 function setTool(id) {
@@ -185,7 +185,7 @@ function setTool(id) {
   const isWalk = (tool === 'walk');
   
   grid.setActive(!isWalk && tool !== null);        
-  controls.enabled = !isWalk; // Disable orbit controls when walking
+  controls.enabled = !isWalk; 
   
   controls.touches.ONE = tool ? -1 : THREE.TOUCH.ROTATE;
   buttons.forEach(b => b.el.classList.toggle('on', b.id === tool));
@@ -214,10 +214,11 @@ setTool(null);
 (function frame() {
   requestAnimationFrame(frame);
 
-  // --- WALK MODE PLAYER MOVEMENT & COLLISION ---
+  // --- WALK MODE MOVEMENT (KEYBOARD + MOBILE TOUCH STEERING) ---
   if (tool === 'walk' && player) {
     const moveSpeed = 0.08;
     const k = input.keys;
+    const tv = input.touchVector;
     let dx = 0, dz = 0;
 
     if (k.w) dz -= 1;
@@ -225,7 +226,13 @@ setTool(null);
     if (k.a) dx -= 1;
     if (k.d) dx += 1;
 
-    if (dx !== 0 || dz !== 0) {
+    // Merge mobile touch drag vector if active
+    if (tv.active) {
+      dx += tv.x;
+      dz += tv.y;
+    }
+
+    if (Math.abs(dx) > 0.05 || Math.abs(dz) > 0.05) {
       const angle = Math.atan2(dx, dz);
       const nextX = playerPos.x + Math.sin(angle) * moveSpeed;
       const nextZ = playerPos.z + Math.cos(angle) * moveSpeed;
@@ -234,7 +241,6 @@ setTool(null);
       let canMove = true;
       if (cellCoords) {
         const building = buildings.at(cellCoords.cx, cellCoords.cz);
-        // Allow walking on roads and open ground; block walking through solid structures
         if (building && building.type !== 'road') {
           canMove = false;
         }
@@ -260,7 +266,7 @@ setTool(null);
     
     dirty = true;
   }
-  // ----------------------------------------------
+  // -------------------------------------------------------------
 
   // --- DAY/NIGHT CYCLE LOGIC ---
   gameTime += 0.0003; 
