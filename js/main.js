@@ -1,4 +1,4 @@
-// main.js: renderer, world, HUD, day/night cycle, and split-screen walk controls.
+// main.js: renderer, world, HUD, day/night cycle, and robust 360 walkthrough camera.
 import { Grid } from './grid.js';
 import { Buildings, TYPES } from './buildings.js';
 import { Input } from './input.js';
@@ -12,12 +12,13 @@ let dirty = true;
 let hintTimer = 0;
 let gameTime = 0;                      
 
-// Walk mode player & camera rotation variables
+// Walk mode player & true 360 camera angles
 let player = null;
 const playerPos = new THREE.Vector3(0, 0.2, 0);
 let playerAngle = 0;
-let cameraYaw = 0;    // Rotation offset around player when looking around
-let cameraDist = 4;   // Zoom distance in walk mode
+let cameraYaw = 0;     // 360 horizontal rotation
+let cameraPitch = 0.3; // Vertical tilt angle
+const cameraDist = 4;  // Follow distance
 
 /* ---------- renderer, scene, camera ---------- */
 const canvas = $('game');
@@ -135,14 +136,6 @@ const input = new Input({
   onPlace: place
 });
 
-// Center-screen zoom handling via wheel / pinch in Walk Mode
-window.addEventListener('wheel', e => {
-  if (tool === 'walk') {
-    cameraDist = Math.max(2, Math.min(8, cameraDist + e.deltaY * 0.005));
-    dirty = true;
-  }
-}, { passive: true });
-
 function showCursor(cell) {
   dirty = true;
   if (!tool || tool === 'walk' || !cell) { grid.hide(); return; }
@@ -174,7 +167,7 @@ addButton('walk', 'Walk Mode', 'Explore');
 Object.keys(TYPES).forEach(id => addButton(id, TYPES[id].name, '$' + TYPES[id].cost));
 
 function updateHud() {
-  $('gold'].textContent = '$' + Math.floor(treasury.gold).toLocaleString();
+  $('gold').textContent = '$' + Math.floor(treasury.gold).toLocaleString();
   buttons.forEach(b => b.el.classList.toggle('poor', !!TYPES[b.id] && treasury.gold < TYPES[b.id].cost));
 }
 
@@ -182,7 +175,7 @@ function say(msg, bad) {
   const el = $('hint');
   clearTimeout(hintTimer);
   el.textContent = msg || (tool === 'walk'
-    ? 'Walk Mode: Left Joystick to move, Right screen to look around.'
+    ? 'Walk Mode: Use W,A,S,D or drag anywhere to look 360° around.'
     : tool
     ? 'Build a ' + TYPES[tool].name + ' for $' + TYPES[tool].cost + '.'
     : 'Pick a tool below. Drag to orbit, pinch to zoom, two fingers or right-drag to pan.');
@@ -197,8 +190,6 @@ function setTool(id) {
   grid.setActive(!isWalk && tool !== null);        
   controls.enabled = !isWalk; 
   
-  input.setControlsVisible(isWalk);
-
   controls.touches.ONE = tool ? -1 : THREE.TOUCH.ROTATE;
   buttons.forEach(b => b.el.classList.toggle('on', b.id === tool));
   input.reset();
@@ -226,31 +217,26 @@ setTool(null);
 (function frame() {
   requestAnimationFrame(frame);
 
-  // --- WALK MODE MOVEMENT & SPLIT-SCREEN LOOK ---
+  // --- STABLE 360° WALK MODE & CAMERA LOOK ---
   if (tool === 'walk' && player) {
     const moveSpeed = 0.08;
     const k = input.keys;
-    const tv = input.touchVector;
-    let dx = 0, dz = 0;
+    let moveX = 0, moveZ = 0;
 
-    if (k.w) dz -= 1;
-    if (k.s) dz += 1;
-    if (k.a) dx -= 1;
-    if (k.d) dx += 1;
+    if (k.w || k.arrowup) moveZ -= 1;
+    if (k.s || k.arrowdown) moveZ += 1;
+    if (k.a || k.arrowleft) moveX -= 1;
+    if (k.d || k.arrowright) moveX += 1;
 
-    if (tv.active) {
-      dx += tv.x;
-      dz += tv.y;
-    }
-
-    // Update camera look rotation from right-screen drag
+    // Apply look delta inputs from mouse or touch dragging
     if (input.lookDelta.active) {
       cameraYaw -= input.lookDelta.x;
+      cameraPitch = Math.max(-0.2, Math.min(1.2, cameraPitch + input.lookDelta.y)); // Clamp vertical tilt
     }
 
-    if (Math.abs(dx) > 0.05 || Math.abs(dz) > 0.05) {
-      // Movement direction relative to camera yaw
-      const angle = Math.atan2(dx, dz) + cameraYaw;
+    if (moveX !== 0 || moveZ !== 0) {
+      // Move relative to the camera's current horizontal yaw orientation
+      const angle = Math.atan2(moveX, moveZ) + cameraYaw;
       const nextX = playerPos.x + Math.sin(angle) * moveSpeed;
       const nextZ = playerPos.z + Math.cos(angle) * moveSpeed;
 
@@ -275,11 +261,13 @@ setTool(null);
       player.rotation.y = playerAngle;
     }
 
-    // Third-Person Camera Follow with Yaw & Zoom Limits (Min: 2, Max: 8)
-    const targetCamX = playerPos.x - Math.sin(playerAngle + cameraYaw) * cameraDist;
-    const targetCamZ = playerPos.z - Math.cos(playerAngle + cameraYaw) * cameraDist;
-    camera.position.lerp(new THREE.Vector3(targetCamX, playerPos.y + cameraDist * 0.6, targetCamZ), 0.1);
-    camera.lookAt(playerPos.x, playerPos.y + 0.5, playerPos.z);
+    // Smooth 360 spherical positioning for camera relative to player position
+    const camX = playerPos.x - Math.sin(cameraYaw) * cameraDist * Math.cos(cameraPitch);
+    const camY = playerPos.y + 0.5 + Math.sin(cameraPitch) * cameraDist;
+    const camZ = playerPos.z - Math.cos(cameraYaw) * cameraDist * Math.cos(cameraPitch);
+
+    camera.position.lerp(new THREE.Vector3(camX, camY, camZ), 0.15);
+    camera.lookAt(playerPos.x, playerPos.y + 0.4, playerPos.z);
     
     dirty = true;
   }
