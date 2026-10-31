@@ -28,6 +28,11 @@ small{display:block;font-size:10px;letter-spacing:.08em;text-transform:uppercase
 .n{display:block;font-size:13px}
 .p{display:block;font-size:11px;color:var(--gold)}
 #toolbar button.poor .p{color:var(--bad)}
+/* Walk-mode joystick: touch devices only (main.js un-hides it). main.js sets `bottom` to sit above the footer */
+#pad{position:absolute;left:max(16px,env(safe-area-inset-left));bottom:160px;width:120px;height:120px;border-radius:50%;
+  background:rgba(14,22,19,.45);border:2px solid var(--edge);pointer-events:auto;touch-action:none}
+#knob{position:absolute;left:50%;top:50%;width:52px;height:52px;margin:-26px 0 0 -26px;border-radius:50%;
+  background:rgba(244,201,93,.55);border:2px solid var(--gold);pointer-events:none}
 </style>
 </head>
 <body>
@@ -38,6 +43,7 @@ small{display:block;font-size:10px;letter-spacing:.08em;text-transform:uppercase
     <div id="hint" class="card"></div>
     <nav id="toolbar" class="card" aria-label="Build tools"></nav>
   </footer>
+  <div id="pad" hidden><div id="knob"></div></div>
 </div>
 
 <!-- Three.js r128 + OrbitControls as globals (widest browser support); your own code is ES modules -->
